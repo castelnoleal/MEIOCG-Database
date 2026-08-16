@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "card": {
+    "id": "number",
+    "name": "string",
+    "type": "string",
+    "frameType": "string",
+    "desc": "string",
+    "race": "string|null",
+    "attribute": "string|null",
+    "level": "number|null",
+    "rank": "number|null",
+    "linkval": "number|null",
+    "atk": "number|null",
+    "def": "number|null",
+    "scale": "number|null",
+    "archetype": "string|null",
+    "card_images": "array",
+    "card_sets": "array",
+    "banlist_info": "array|null"
+  }
+}

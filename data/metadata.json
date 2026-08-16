@@ -1,0 +1,20 @@
+{
+  "database": "MEIOCG-Database",
+  "version": "0.1.0",
+  "status": "foundation",
+  "schema_version": 1,
+  "last_import": null,
+  "source": {
+    "name": "YGOPRODeck API",
+    "api_version": "v7",
+    "url": "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+  },
+  "intended_hosts": [
+    "cards.meiocg.org"
+  ],
+  "consumers": [
+    "Duel Synapse"
+  ],
+  "card_count": 0,
+  "image_count": 0
+}
