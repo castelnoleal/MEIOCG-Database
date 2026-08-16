@@ -1,0 +1,102 @@
+name: Update MEIOCG Database
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  update-database:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download and build database
+        shell: python
+        run: |
+          import json, re, urllib.request
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          API = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+          VER = "https://db.ygoprodeck.com/api/v7/checkDBVer.php"
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"User-Agent":"MEIOCG-Database-Updater/1.0"})
+              with urllib.request.urlopen(req, timeout=180) as r:
+                  return json.loads(r.read())
+
+          def norm(s):
+              return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+          data = Path("data")
+          idx = Path("indexes")
+          data.mkdir(exist_ok=True)
+          idx.mkdir(exist_ok=True)
+
+          version = get(VER)
+          cards = get(API).get("data", [])
+          if not cards:
+              raise SystemExit("No cards returned; update aborted.")
+
+          (data/"cards.json").write_text(
+              json.dumps(cards, ensure_ascii=False, separators=(",",":")),
+              encoding="utf-8"
+          )
+
+          names, ids, archetypes, types = {}, {}, {}, {}
+          for c in cards:
+              cid = c["id"]
+              ids[str(cid)] = {"id": cid, "name": c.get("name","")}
+              n = norm(c.get("name"))
+              if n: names.setdefault(n, []).append(cid)
+              a = c.get("archetype")
+              if a: archetypes.setdefault(a, []).append(cid)
+              t = c.get("type")
+              if t: types.setdefault(t, []).append(cid)
+
+          for filename, obj in [
+              ("name.json", names), ("id.json", ids),
+              ("archetype.json", archetypes), ("type.json", types)
+          ]:
+              (idx/filename).write_text(
+                  json.dumps(obj, ensure_ascii=False, separators=(",",":")),
+                  encoding="utf-8"
+              )
+
+          metadata = {
+              "database":"MEIOCG-Database",
+              "schema_version":1,
+              "status":"populated",
+              "last_import_utc":datetime.now(timezone.utc).isoformat(),
+              "source":{"name":"YGOPRODeck","api_version":"v7","database_version":version},
+              "card_count":len(cards),
+              "image_count":sum(len(c.get("card_images",[])) for c in cards)
+          }
+          (data/"metadata.json").write_text(
+              json.dumps(metadata, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+          print(f"Built MEIOCG database: {len(cards)} cards")
+
+      - name: Commit changes
+        run: |
+          git config user.name "MEIOCG Database Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/cards.json data/metadata.json indexes/
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Update MEIOCG card database"
+            git push
+          fi
