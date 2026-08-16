@@ -1,20 +1,28 @@
 {
   "database": "MEIOCG-Database",
-  "version": "0.1.0",
-  "status": "foundation",
+  "version": "1.0.0",
   "schema_version": 1,
-  "last_import": null,
+  "status": "populated",
+  "last_import_utc": "2026-08-16T21:06:24.500295+00:00",
   "source": {
     "name": "YGOPRODeck API",
     "api_version": "v7",
-    "url": "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+    "database_version": [
+      {
+        "database_version": "146.60",
+        "last_update": "2026-08-15 16:02:49"
+      }
+    ]
   },
-  "intended_hosts": [
-    "cards.meiocg.org"
-  ],
-  "consumers": [
-    "Duel Synapse"
-  ],
-  "card_count": 0,
-  "image_count": 0
+  "card_count": 14507,
+  "image_count": 14671,
+  "cards_sha256": "4ac84c8dd7796aa3d5e7b57832bab05e20858afadabaeeea552f3f1f4115b34d",
+  "files": {
+    "full": "data/cards.json",
+    "compact": "data/cards.min.json",
+    "name_index": "indexes/name.json",
+    "id_index": "indexes/id.json",
+    "archetype_index": "indexes/archetype.json",
+    "type_index": "indexes/type.json"
+  }
 }
