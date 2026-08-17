@@ -2,14 +2,14 @@
   "database": "MEIOCG-Database",
   "schema_version": 1,
   "status": "populated",
-  "last_import_utc": "2026-08-16T23:56:34.277632+00:00",
+  "last_import_utc": "2026-08-17T01:14:52.555211+00:00",
   "source": {
     "name": "YGOPRODeck",
     "api_version": "v7",
     "database_version": [
       {
-        "database_version": "146.60",
-        "last_update": "2026-08-15 16:02:49"
+        "database_version": "146.67",
+        "last_update": "2026-08-17 00:03:29"
       }
     ]
   },
