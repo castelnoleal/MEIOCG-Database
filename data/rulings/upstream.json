@@ -1,0 +1,8 @@
+{
+  "database": "MEIOCG YGOResources Q&A History",
+  "upstream": "https://github.com/db-ygoresources-com/yugioh-qa-history",
+  "branch": "main",
+  "upstream_commit": "0adcc0bd406241a7a1722ee4ee597a7fd5a98190",
+  "upstream_commit_date": "2026-08-15T10:15:22Z",
+  "synced_at_utc": "2026-08-17T06:30:38Z"
+}
