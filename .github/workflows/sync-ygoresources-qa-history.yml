@@ -1,0 +1,67 @@
+name: Sync YGOResources Q&A Database
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-ygoresources-qa
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout MEIOCG repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Clone current parent Q&A database
+        run: |
+          git clone --depth 1 --single-branch --branch main \
+            https://github.com/db-ygoresources-com/yugioh-qa-history.git \
+            /tmp/yugioh-qa-history
+
+      - name: Sync complete Q&A database
+        run: |
+          mkdir -p data/rulings/yugioh-qa-history
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            /tmp/yugioh-qa-history/ \
+            data/rulings/yugioh-qa-history/
+
+      - name: Record upstream revision
+        shell: bash
+        run: |
+          UPSTREAM_SHA="$(git -C /tmp/yugioh-qa-history rev-parse HEAD)"
+          UPSTREAM_DATE="$(git -C /tmp/yugioh-qa-history log -1 --format=%cI)"
+          cat > data/rulings/upstream.json <<EOF
+          {
+            "database": "MEIOCG YGOResources Q&A History",
+            "upstream": "https://github.com/db-ygoresources-com/yugioh-qa-history",
+            "branch": "main",
+            "upstream_commit": "$UPSTREAM_SHA",
+            "upstream_commit_date": "$UPSTREAM_DATE",
+            "synced_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Commit only when the parent database changed
+        run: |
+          git config user.name "MEIOCG Database Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/rulings/
+
+          if git diff --cached --quiet; then
+            echo "Parent Q&A database is already current."
+          else
+            git commit -m "Sync YGOResources Q&A database"
+            git push
+          fi
