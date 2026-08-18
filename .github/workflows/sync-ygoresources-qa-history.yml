@@ -1,0 +1,268 @@
+name: Sync YGOResources Q&A Database (Fast Mirror)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-ygoresources-qa
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout MEIOCG repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Clone complete parent Q&A history
+        run: |
+          rm -rf /tmp/yugioh-qa-history
+          git clone --depth 1 --single-branch --branch main \
+            https://github.com/db-ygoresources-com/yugioh-qa-history.git \
+            /tmp/yugioh-qa-history
+
+      - name: Sync complete parent history
+        run: |
+          mkdir -p data/rulings/yugioh-qa-history
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            /tmp/yugioh-qa-history/ \
+            data/rulings/yugioh-qa-history/
+
+      - name: Build one-request-per-card MEIOCG ruling mirror
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python3 <<'PY'
+          import concurrent.futures
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          ROOT = Path("data/rulings")
+          HISTORY = ROOT / "yugioh-qa-history"
+          QA_CACHE = ROOT / "qa-api-cache"
+          CARD_DIR = ROOT / "cards"
+          QA_CACHE.mkdir(parents=True, exist_ok=True)
+          CARD_DIR.mkdir(parents=True, exist_ok=True)
+
+          API = "https://db.ygoresources.com"
+          UA = "MEIOCG-Kodex-Ruling-Mirror/2.0"
+          META = ROOT / "mirror-metadata.json"
+
+          def get_json(url, timeout=30):
+              req = urllib.request.Request(url, headers={"User-Agent": UA})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read())
+
+          def get_json_with_headers(url, timeout=30):
+              req = urllib.request.Request(url, headers={"User-Agent": UA})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read()), dict(r.headers)
+
+          def ids_from_value(v):
+              out = set()
+              if isinstance(v, (int, float)) and int(v) == v:
+                  s = str(int(v))
+                  if len(s) >= 3:
+                      out.add(s)
+              elif isinstance(v, str):
+                  for m in re.findall(r"\b\d{3,}\b", v):
+                      out.add(m)
+              elif isinstance(v, list):
+                  for x in v:
+                      out |= ids_from_value(x)
+              elif isinstance(v, dict):
+                  for x in v.values():
+                      out |= ids_from_value(x)
+              return out
+
+          def mentioned_cards(obj):
+              out = set()
+              if isinstance(obj, dict):
+                  for k, v in obj.items():
+                      lk = re.sub(r"[^a-z0-9]", "", k.lower())
+                      if lk in {
+                          "mentionedcards", "mentionedcardids", "cardids",
+                          "cardsmentioned", "relatedcards", "relatedcardids"
+                      }:
+                          out |= ids_from_value(v)
+                      if isinstance(v, (dict, list)):
+                          out |= mentioned_cards(v)
+              elif isinstance(obj, list):
+                  for x in obj:
+                      out |= mentioned_cards(x)
+              return out
+
+          # The parent history filenames are the Q&A IDs.
+          qa_files = sorted(HISTORY.glob("*.json"), key=lambda p: p.stem)
+          relationships = {}
+          qa_objects = {}
+
+          for path in qa_files:
+              try:
+                  obj = json.loads(path.read_text(encoding="utf-8"))
+              except Exception:
+                  continue
+              qid = path.stem
+              if not qid.isdigit():
+                  continue
+              cards = mentioned_cards(obj)
+              if not cards:
+                  # Preserve the record even when no card association is exposed.
+                  continue
+              qa_objects[qid] = obj
+              for cid in cards:
+                  relationships.setdefault(cid, set()).add(qid)
+
+          # Use YGOResources' cache revision/manifest so only changed Q&A records
+          # need to be refreshed. This follows the upstream API's own caching model.
+          previous_meta = {}
+          if META.exists():
+              try: previous_meta = json.loads(META.read_text(encoding="utf-8"))
+              except Exception: previous_meta = {}
+          previous_revision = previous_meta.get("api_cache_revision")
+          changed_qids = None
+
+          qids = sorted(qa_objects, key=int)
+          try:
+              if previous_revision is not None:
+                  manifest = get_json(f"{API}/manifest/{int(previous_revision)}")
+                  changed_qids = set()
+                  blob = json.dumps(manifest, ensure_ascii=False)
+                  for m in re.finditer(r"/data/qa/(\d+)", blob):
+                      changed_qids.add(m.group(1))
+              else:
+                  changed_qids = set(qids)
+          except Exception:
+              changed_qids = None
+
+          if changed_qids is None:
+              refresh = set(qids)
+          else:
+              refresh = set(changed_qids) & set(qids)
+
+          # A history-file hash is also stored so a parent-repository change forces
+          # the corresponding English/API record to refresh.
+          history_hash = {}
+          for qid in qids:
+              raw = HISTORY / f"{qid}.json"
+              history_hash[qid] = hashlib.sha256(raw.read_bytes()).hexdigest() if raw.exists() else ""
+
+          def fetch_one(qid):
+              dest = QA_CACHE / f"{qid}.json"
+              use_cache = False
+              if dest.exists() and dest.stat().st_size > 2 and qid not in refresh:
+                  try:
+                      cached = json.loads(dest.read_text(encoding="utf-8"))
+                      use_cache = cached.get("_meiocg_history_sha") == history_hash[qid]
+                  except Exception:
+                      use_cache = False
+              if use_cache:
+                  return qid, True, "cached"
+              try:
+                  data = get_json(f"{API}/data/qa/{qid}")
+                  if isinstance(data, dict):
+                      data["_meiocg_history_sha"] = history_hash[qid]
+                  dest.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                  return qid, True, "fetched"
+              except Exception as e:
+                  print(f"WARN: Q&A {qid}: {e}")
+                  return qid, False, "failed"
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              done = 0
+              for qid, ok, mode in ex.map(fetch_one, qids):
+                  done += 1
+                  if done % 250 == 0:
+                      print(f"Q&A API cache: {done}/{len(qids)}")
+
+          def load_cached(qid):
+              p = QA_CACHE / f"{qid}.json"
+              if p.exists():
+                  try:
+                      return json.loads(p.read_text(encoding="utf-8"))
+                  except Exception:
+                      pass
+              return qa_objects.get(qid)
+
+          # Each card gets a single compact JSON file containing ALL related Q&As.
+          for cid, qids_for_card in relationships.items():
+              records = []
+              for qid in sorted(qids_for_card, key=int):
+                  records.append({
+                      "id": int(qid),
+                      "history": qa_objects.get(qid),
+                      "api": load_cached(qid)
+                  })
+              payload = {
+                  "schema": 2,
+                  "cardId": int(cid),
+                  "count": len(records),
+                  "source": "YGOResources + db-ygoresources-com/yugioh-qa-history",
+                  "records": records
+              }
+              (CARD_DIR / f"{cid}.json").write_text(
+                  json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                  encoding="utf-8"
+              )
+
+          api_revision = previous_revision
+          try:
+              if qids:
+                  _, headers = get_json_with_headers(f"{API}/data/qa/{qids[0]}")
+                  api_revision = headers.get("X-Cache-Revision", headers.get("x-cache-revision", previous_revision))
+          except Exception:
+              pass
+          meta = {
+              "schema": 3,
+              "cards": len(relationships),
+              "qas": len(qa_objects),
+              "api_cache_files": len(list(QA_CACHE.glob("*.json"))),
+              "api_cache_revision": api_revision,
+              "parent": "https://github.com/db-ygoresources-com/yugioh-qa-history",
+              "api": API,
+              "generated_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+          }
+          (ROOT / "mirror-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+          print(f"Built {len(relationships)} card aggregates from {len(qa_objects)} Q&As")
+          PY
+
+      - name: Record upstream revision
+        run: |
+          UPSTREAM_SHA="$(git -C /tmp/yugioh-qa-history rev-parse HEAD)"
+          UPSTREAM_DATE="$(git -C /tmp/yugioh-qa-history log -1 --format=%cI)"
+          cat > data/rulings/upstream.json <<EOF
+          {
+            "database": "MEIOCG YGOResources Q&A History",
+            "upstream": "https://github.com/db-ygoresources-com/yugioh-qa-history",
+            "branch": "main",
+            "upstream_commit": "$UPSTREAM_SHA",
+            "upstream_commit_date": "$UPSTREAM_DATE",
+            "synced_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Commit mirror only when it changed
+        run: |
+          git config user.name "MEIOCG Database Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/rulings/
+          if git diff --cached --quiet; then
+            echo "No ruling changes."
+          else
+            git commit -m "Update MEIOCG fast ruling mirror"
+            git push
+          fi
